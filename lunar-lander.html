@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>アポロ月面着陸ゲーム</title>
+<style>
+  html,body{margin:0;background:#05060a;color:#e8ecf4;font-family:system-ui,"Meiryo",sans-serif;height:100%}
+  body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px}
+  canvas{background:#000;border:1px solid #334;max-width:100vw;height:auto}
+  .help{font-size:14px;color:#9aa6bd;text-align:center;line-height:1.6;padding:0 12px}
+  kbd{background:#1c2233;border:1px solid #445;border-radius:4px;padding:0 6px}
+</style>
+</head>
+<body>
+<canvas id="c" width="900" height="640"></canvas>
+<div class="help">
+  <kbd>＋</kbd> / <kbd>－</kbd> 噴射の強さ　<kbd>←</kbd> <kbd>→</kbd> 横方向の噴射　<kbd>Space</kbd> リスタート<br>
+  目標：緑の着陸パッドに 垂直速度 2.0m/s 以下・横速度 1.0m/s 以下 で着陸
+</div>
+<script>
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+const GROUND_Y = 580;          // 1px = 1m, 高度500m -> y=80
+const START_ALT = 500;
+const G = 1.62;                // 月の重力 m/s^2
+const MAX_THRUST = 5.0;        // 主エンジン最大加速度
+const SIDE_THRUST = 1.6;       // 横スラスター加速度
+const MAX_VY = 2.0, MAX_VX = 1.0;
+const FUEL_MAX = 100;
+
+let L, particles, stars, craters, pad, keys = {}, state;
+
+function rnd(a, b) { return a + Math.random() * (b - a); }
+
+function init() {
+  pad = { x: rnd(150, W - 150), w: 90 };
+  L = {
+    x: rnd(60, W - 60), alt: START_ALT,
+    vx: rnd(-3, 3), vy: 0,
+    power: 0, fuel: FUEL_MAX, side: 0
+  };
+  particles = [];
+  state = 'play';
+  if (!stars) {
+    stars = Array.from({ length: 120 }, () => ({ x: rnd(0, W), y: rnd(0, GROUND_Y), r: rnd(0.4, 1.6) }));
+    craters = Array.from({ length: 14 }, () => ({ x: rnd(0, W), w: rnd(25, 70) }));
+  }
+}
+
+addEventListener('keydown', e => {
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) e.preventDefault();
+  if (e.repeat && (e.key === '+' || e.key === '-' || e.key === ';' || e.key === '=')) { /* 長押し許可 */ }
+  keys[e.key] = true;
+  if (state === 'play') {
+    if (e.key === '+' || e.key === ';' || e.code === 'NumpadAdd' || e.key === 'ArrowUp')
+      L.power = Math.min(100, L.power + 5);
+    if (e.key === '-' || e.key === '=' || e.code === 'NumpadSubtract' || e.key === 'ArrowDown')
+      L.power = Math.max(0, L.power - 5);
+  } else if (e.key === ' ' || e.key === 'r' || e.key === 'R' || e.key === 'Enter') {
+    init();
+  }
+});
+addEventListener('keyup', e => { keys[e.key] = false; });
+
+function explode(x, y, n, color) {
+  for (let i = 0; i < n; i++) {
+    const a = rnd(0, Math.PI * 2), s = rnd(10, 90);
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 20, life: rnd(0.6, 1.8), color });
+  }
+}
+
+let last = performance.now();
+function loop(t) {
+  const dt = Math.min(0.05, (t - last) / 1000);
+  last = t;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function update(dt) {
+  particles.forEach(p => { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 30 * dt; p.life -= dt; });
+  particles = particles.filter(p => p.life > 0);
+  if (state !== 'play') return;
+
+  // 主エンジン
+  let thrust = 0;
+  if (L.fuel > 0 && L.power > 0) {
+    thrust = MAX_THRUST * L.power / 100;
+    L.fuel = Math.max(0, L.fuel - (L.power / 100) * 4 * dt);
+  }
+  // 横スラスター
+  L.side = 0;
+  if (L.fuel > 0) {
+    if (keys['ArrowLeft'])  L.side -= 1;
+    if (keys['ArrowRight']) L.side += 1;
+    if (L.side) L.fuel = Math.max(0, L.fuel - 0.8 * dt);
+  }
+
+  // 月の引力で加速して落下（上向き推力が+）
+  L.vy += (G - thrust) * dt;
+  L.vx += L.side * SIDE_THRUST * dt;
+  L.alt -= L.vy * dt;
+  L.x += L.vx * dt;
+
+  // 噴射パーティクル
+  if (thrust > 0) {
+    const y = GROUND_Y - L.alt;
+    for (let i = 0; i < 2; i++)
+      particles.push({ x: L.x + rnd(-4, 4), y: y + 8, vx: rnd(-10, 10), vy: rnd(40, 90) * (L.power / 100 + 0.3), life: rnd(0.15, 0.4), color: '#ffb030' });
+  }
+  if (L.side) {
+    const y = GROUND_Y - L.alt - 4;
+    particles.push({ x: L.x - L.side * 14, y, vx: -L.side * rnd(40, 70), vy: rnd(-5, 5), life: 0.2, color: '#9cf' });
+  }
+
+  // 画面端
+  if (L.x < 10) { L.x = 10; L.vx = 0; }
+  if (L.x > W - 10) { L.x = W - 10; L.vx = 0; }
+
+  // 接地判定
+  if (L.alt <= 0) {
+    L.alt = 0;
+    const onPad = Math.abs(L.x - pad.x) <= pad.w / 2;
+    const soft = L.vy <= MAX_VY && Math.abs(L.vx) <= MAX_VX;
+    if (onPad && soft) {
+      state = 'success';
+    } else {
+      state = 'crash';
+      state_reason = !onPad ? 'パッドの外に着陸しました' :
+        (L.vy > MAX_VY ? '落下速度が速すぎました' : '横方向の速度が残っていました');
+      explode(L.x, GROUND_Y, 90, '#ff7a30');
+      explode(L.x, GROUND_Y, 40, '#ddd');
+    }
+  }
+}
+let state_reason = '';
+
+function drawLander(x, y, flame, side) {
+  ctx.save();
+  ctx.translate(x, y);
+  // 噴射炎
+  if (flame > 0) {
+    const f = 8 + flame * 30 + Math.random() * 6;
+    ctx.fillStyle = '#ffb030';
+    ctx.beginPath(); ctx.moveTo(-6, 8); ctx.lineTo(6, 8); ctx.lineTo(0, 8 + f); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#fff4b0';
+    ctx.beginPath(); ctx.moveTo(-3, 8); ctx.lineTo(3, 8); ctx.lineTo(0, 8 + f * 0.55); ctx.closePath(); ctx.fill();
+  }
+  // 脚
+  ctx.strokeStyle = '#bbb'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-8, 2); ctx.lineTo(-17, 15); ctx.moveTo(8, 2); ctx.lineTo(17, 15);
+  ctx.moveTo(-21, 15); ctx.lineTo(-13, 15); ctx.moveTo(13, 15); ctx.lineTo(21, 15);
+  ctx.stroke();
+  // 下段（降下段）
+  ctx.fillStyle = '#d4a017';
+  ctx.fillRect(-11, -2, 22, 10);
+  // 上段（上昇段）
+  ctx.fillStyle = '#cfd3da';
+  ctx.beginPath(); ctx.moveTo(-9, -2); ctx.lineTo(-7, -14); ctx.lineTo(7, -14); ctx.lineTo(9, -2); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#2a3550';
+  ctx.fillRect(-4, -11, 8, 5);
+  // 横スラスター炎
+  if (side) {
+    ctx.fillStyle = '#9cf';
+    ctx.beginPath();
+    ctx.moveTo(-side * 10, -8);
+    ctx.lineTo(-side * (18 + Math.random() * 8), -11);
+    ctx.lineTo(-side * (18 + Math.random() * 8), -5);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function draw() {
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  // 星
+  ctx.fillStyle = '#fff';
+  stars.forEach(s => { ctx.globalAlpha = 0.5 + s.r / 4; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 7); ctx.fill(); });
+  ctx.globalAlpha = 1;
+  // 地球
+  const eg = ctx.createRadialGradient(780, 90, 4, 780, 90, 34);
+  eg.addColorStop(0, '#7fb8ff'); eg.addColorStop(1, '#1b3f8a');
+  ctx.fillStyle = eg; ctx.beginPath(); ctx.arc(780, 90, 30, 0, 7); ctx.fill();
+
+  // 月面
+  ctx.fillStyle = '#8c8c92';
+  ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+  ctx.fillStyle = '#6f6f75';
+  craters.forEach(c => { ctx.beginPath(); ctx.ellipse(c.x, GROUND_Y + 22, c.w / 2, 7, 0, 0, 7); ctx.fill(); });
+  // 高度メモリ
+  ctx.fillStyle = '#556'; ctx.font = '11px sans-serif'; ctx.textAlign = 'left';
+  for (let a = 100; a <= 500; a += 100) {
+    const y = GROUND_Y - a;
+    ctx.fillRect(0, y, 10, 1);
+    ctx.fillText(a + 'm', 14, y + 4);
+  }
+  // 着陸パッド
+  ctx.fillStyle = '#2ecc71';
+  ctx.fillRect(pad.x - pad.w / 2, GROUND_Y - 3, pad.w, 6);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(pad.x - pad.w / 2, GROUND_Y - 12, 3, 9);
+  ctx.fillRect(pad.x + pad.w / 2 - 3, GROUND_Y - 12, 3, 9);
+
+  // 着陸船
+  const ly = GROUND_Y - L.alt - 15; // 脚の先が地面に付く
+  if (state !== 'crash') drawLander(L.x, ly, state === 'play' ? L.power / 100 * (L.fuel > 0 ? 1 : 0) : 0, L.side);
+
+  // パーティクル
+  particles.forEach(p => {
+    ctx.globalAlpha = Math.min(1, p.life * 2);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, 3, 3);
+  });
+  ctx.globalAlpha = 1;
+
+  // HUD
+  const vyOk = L.vy <= MAX_VY, vxOk = Math.abs(L.vx) <= MAX_VX;
+  ctx.font = '15px monospace'; ctx.textAlign = 'left';
+  const rows = [
+    ['高度', L.alt.toFixed(1) + ' m', '#e8ecf4'],
+    ['垂直速度', (L.vy >= 0 ? '↓ ' : '↑ ') + Math.abs(L.vy).toFixed(2) + ' m/s', vyOk ? '#5f5' : '#f66'],
+    ['横速度', (L.vx >= 0 ? '→ ' : '← ') + Math.abs(L.vx).toFixed(2) + ' m/s', vxOk ? '#5f5' : '#f66'],
+    ['噴射', L.power + ' %', '#ffb030'],
+    ['燃料', L.fuel.toFixed(0) + ' %', L.fuel > 20 ? '#e8ecf4' : '#f66'],
+  ];
+  rows.forEach((r, i) => {
+    ctx.fillStyle = '#9aa6bd'; ctx.fillText(r[0], 50, 28 + i * 22);
+    ctx.fillStyle = r[2]; ctx.fillText(r[1], 140, 28 + i * 22);
+  });
+  // 噴射バー
+  ctx.strokeStyle = '#667'; ctx.strokeRect(300, 14, 14, 110);
+  ctx.fillStyle = '#ffb030';
+  ctx.fillRect(301, 14 + 108 * (1 - L.power / 100) + 1, 12, 108 * L.power / 100);
+  // 月の重力に釣り合う推力の目安
+  const hover = G / MAX_THRUST * 100;
+  ctx.fillStyle = '#fff'; ctx.fillRect(296, 14 + 108 * (1 - hover / 100) + 1, 22, 1);
+  ctx.fillStyle = '#9aa6bd'; ctx.font = '11px sans-serif';
+  ctx.fillText('重力と釣合 ' + hover.toFixed(0) + '%', 322, 14 + 108 * (1 - hover / 100) + 5);
+
+  if (L.fuel <= 0 && state === 'play') {
+    ctx.fillStyle = '#f66'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('燃料切れ！ 月の引力に身をまかせるしかない…', W / 2, 200);
+  }
+
+  if (state !== 'play') {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 230, W, 140);
+    ctx.textAlign = 'center';
+    if (state === 'success') {
+      ctx.fillStyle = '#5f5'; ctx.font = 'bold 36px sans-serif';
+      ctx.fillText('着陸成功！ 小さな一歩…', W / 2, 285);
+      ctx.fillStyle = '#e8ecf4'; ctx.font = '16px sans-serif';
+      ctx.fillText(`着地速度 ${L.vy.toFixed(2)} m/s ／ 残り燃料 ${L.fuel.toFixed(0)}%`, W / 2, 320);
+    } else {
+      ctx.fillStyle = '#f55'; ctx.font = 'bold 36px sans-serif';
+      ctx.fillText('墜落…', W / 2, 285);
+      ctx.fillStyle = '#e8ecf4'; ctx.font = '16px sans-serif';
+      ctx.fillText(`${state_reason}（${L.vy.toFixed(2)} m/s）`, W / 2, 320);
+    }
+    ctx.fillStyle = '#9aa6bd'; ctx.font = '14px sans-serif';
+    ctx.fillText('Space キーでもう一度', W / 2, 352);
+  }
+}
+
+init();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
