@@ -2,25 +2,47 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>アポロ月面着陸ゲーム</title>
 <style>
-  html,body{margin:0;background:#05060a;color:#e8ecf4;font-family:system-ui,"Meiryo",sans-serif;height:100%}
-  body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px}
-  canvas{background:#000;border:1px solid #334;max-width:100vw;height:auto}
+  html,body{margin:0;background:#05060a;color:#e8ecf4;font-family:system-ui,"Meiryo",sans-serif;height:100%;
+    overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+    -webkit-tap-highlight-color:transparent;overscroll-behavior:none}
+  body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;height:100dvh}
+  canvas{background:#000;border:1px solid #334;max-width:100vw;max-height:calc(100dvh - 60px);width:auto;height:auto;touch-action:none}
+  #pad{position:fixed;left:0;right:0;bottom:max(10px,env(safe-area-inset-bottom));display:flex;justify-content:space-between;
+    padding:0 max(12px,env(safe-area-inset-left));pointer-events:none}
+  #pad .grp{display:flex;gap:12px}
+  #pad button{pointer-events:auto;width:76px;height:76px;border-radius:50%;border:2px solid rgba(255,255,255,.45);
+    background:rgba(40,50,80,.55);color:#fff;font-size:30px;touch-action:none;-webkit-user-select:none;user-select:none;padding:0}
+  #pad button.on{background:rgba(255,176,48,.6)}
+  @media (pointer:fine){ #pad{display:none} }
+  @media (pointer:coarse){ .help.kb{display:none} }
   .help{font-size:14px;color:#9aa6bd;text-align:center;line-height:1.6;padding:0 12px}
   kbd{background:#1c2233;border:1px solid #445;border-radius:4px;padding:0 6px}
 </style>
 </head>
 <body>
 <canvas id="c" width="900" height="640"></canvas>
-<div class="help">
+<div class="help kb">
   <kbd>＋</kbd> / <kbd>－</kbd> 噴射の強さ　<kbd>←</kbd> <kbd>→</kbd> 横方向の噴射　<kbd>Space</kbd> リスタート<br>
   目標：緑の着陸パッドに 垂直速度 2.0m/s 以下・横速度 1.0m/s 以下 で着陸
 </div>
+<div id="pad">
+  <div class="grp">
+    <button id="bL" aria-label="左">◀</button>
+    <button id="bR" aria-label="右">▶</button>
+  </div>
+  <div class="grp">
+    <button id="bM" aria-label="弱く">－</button>
+    <button id="bP" aria-label="強く">＋</button>
+  </div>
+</div>
 <script>
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
-const W = cv.width, H = cv.height;
+let W = cv.width;
+const H = cv.height;
 const GROUND_Y = 580;          // 1px = 1m, 高度500m -> y=80
 const START_ALT = 500;
 const G = 1.62;                // 月の重力 m/s^2
@@ -33,7 +55,14 @@ let L, particles, stars, craters, pad, keys = {}, state;
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
 
+function fitCanvas() {
+  // 縦画面(スマホ)は細長いフィールド、横画面・PCは広いフィールド
+  const nw = innerWidth < innerHeight ? 420 : 900;
+  if (nw !== W) { W = nw; cv.width = W; stars = null; }
+}
+
 function init() {
+  fitCanvas();
   pad = { x: rnd(150, W - 150), w: 90 };
   L = {
     x: rnd(60, W - 60), alt: START_ALT,
@@ -62,6 +91,45 @@ addEventListener('keydown', e => {
   }
 });
 addEventListener('keyup', e => { keys[e.key] = false; });
+
+function changePower(d) {
+  if (state === 'play') L.power = Math.max(0, Math.min(100, L.power + d));
+}
+
+// ---- タッチ操作 ----
+function holdButton(id, onDown, onUp, repeatMs) {
+  const el = document.getElementById(id);
+  let timer = null;
+  const start = e => {
+    e.preventDefault();
+    el.classList.add('on');
+    onDown();
+    if (repeatMs) { clearInterval(timer); timer = setInterval(onDown, repeatMs); }
+  };
+  const end = e => {
+    e.preventDefault();
+    el.classList.remove('on');
+    clearInterval(timer);
+    if (onUp) onUp();
+  };
+  el.addEventListener('pointerdown', start);
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => el.addEventListener(t, end));
+  el.addEventListener('contextmenu', e => e.preventDefault());
+}
+holdButton('bL', () => { keys['ArrowLeft'] = true; },  () => { keys['ArrowLeft'] = false; });
+holdButton('bR', () => { keys['ArrowRight'] = true; }, () => { keys['ArrowRight'] = false; });
+holdButton('bP', () => changePower(5),  null, 130);
+holdButton('bM', () => changePower(-5), null, 130);
+
+// 結果表示中は画面タップでリスタート
+cv.addEventListener('pointerdown', e => { if (state !== 'play') { e.preventDefault(); init(); } });
+addEventListener('resize', () => {
+  const nw = innerWidth < innerHeight ? 420 : 900;
+  if (nw !== W) init();
+});
+// iOS Safari のピンチ/ダブルタップ拡大を抑止
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
 function explode(x, y, n, color) {
   for (let i = 0; i < n; i++) {
@@ -181,9 +249,9 @@ function draw() {
   stars.forEach(s => { ctx.globalAlpha = 0.5 + s.r / 4; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 7); ctx.fill(); });
   ctx.globalAlpha = 1;
   // 地球
-  const eg = ctx.createRadialGradient(780, 90, 4, 780, 90, 34);
+  const eg = ctx.createRadialGradient(W - 42, 170, 3, W - 42, 170, 26);
   eg.addColorStop(0, '#7fb8ff'); eg.addColorStop(1, '#1b3f8a');
-  ctx.fillStyle = eg; ctx.beginPath(); ctx.arc(780, 90, 30, 0, 7); ctx.fill();
+  ctx.fillStyle = eg; ctx.beginPath(); ctx.arc(W - 42, 170, 24, 0, 7); ctx.fill();
 
   // 月面
   ctx.fillStyle = '#8c8c92';
@@ -241,26 +309,26 @@ function draw() {
   ctx.fillText('重力と釣合 ' + hover.toFixed(0) + '%', 322, 14 + 108 * (1 - hover / 100) + 5);
 
   if (L.fuel <= 0 && state === 'play') {
-    ctx.fillStyle = '#f66'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('燃料切れ！ 月の引力に身をまかせるしかない…', W / 2, 200);
+    ctx.fillStyle = '#f66'; ctx.font = (W < 500 ? 'bold 16px' : 'bold 20px') + ' sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('燃料切れ！ 重力に身をまかせるしかない…', W / 2, 200);
   }
 
   if (state !== 'play') {
     ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 230, W, 140);
     ctx.textAlign = 'center';
     if (state === 'success') {
-      ctx.fillStyle = '#5f5'; ctx.font = 'bold 36px sans-serif';
+      ctx.fillStyle = '#5f5'; ctx.font = (W < 500 ? 'bold 28px' : 'bold 36px') + ' sans-serif';
       ctx.fillText('着陸成功！ 小さな一歩…', W / 2, 285);
-      ctx.fillStyle = '#e8ecf4'; ctx.font = '16px sans-serif';
+      ctx.fillStyle = '#e8ecf4'; ctx.font = (W < 500 ? '13px' : '16px') + ' sans-serif';
       ctx.fillText(`着地速度 ${L.vy.toFixed(2)} m/s ／ 残り燃料 ${L.fuel.toFixed(0)}%`, W / 2, 320);
     } else {
-      ctx.fillStyle = '#f55'; ctx.font = 'bold 36px sans-serif';
+      ctx.fillStyle = '#f55'; ctx.font = (W < 500 ? 'bold 28px' : 'bold 36px') + ' sans-serif';
       ctx.fillText('墜落…', W / 2, 285);
-      ctx.fillStyle = '#e8ecf4'; ctx.font = '16px sans-serif';
+      ctx.fillStyle = '#e8ecf4'; ctx.font = (W < 500 ? '13px' : '16px') + ' sans-serif';
       ctx.fillText(`${state_reason}（${L.vy.toFixed(2)} m/s）`, W / 2, 320);
     }
-    ctx.fillStyle = '#9aa6bd'; ctx.font = '14px sans-serif';
-    ctx.fillText('Space キーでもう一度', W / 2, 352);
+    ctx.fillStyle = '#9aa6bd'; ctx.font = (W < 500 ? '13px' : '14px') + ' sans-serif';
+    ctx.fillText('Space キー / 画面タップでもう一度', W / 2, 352);
   }
 }
 
